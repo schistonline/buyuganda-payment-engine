@@ -1,0 +1,25 @@
+name: Deploy Supabase Edge Functions
+
+on:
+  push:
+    branches:
+      - main # Automatically runs whenever you save code to the main branch
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code Files
+        uses: actions/checkout@v4
+
+      - name: Set up Supabase Automation CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Deploy All Edge Functions to Supabase Cloud
+        run: |
+          supabase link --project-ref ${{ secrets.SUPABASE_PROJECT_ID }} --password "YOUR_DATABASE_PASSWORD"
+          supabase functions deploy livepay-collection --no-verify-jwt
+          supabase functions deploy livepay-payout --no-verify-jwt
