@@ -1,0 +1,5 @@
+[functions.livepay-collection]
+verify_jwt = false
+
+[functions.livepay-payout]
+verify_jwt = false
