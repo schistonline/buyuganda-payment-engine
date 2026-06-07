@@ -43,48 +43,45 @@ export default {
 
       if (dbError) throw new Error(`Database Write Rejected: ${dbError.message}`);
 
-      // Encode credentials cleanly
-      const basicAuthToken = btoa(`${apiKey}:`);
-
-      const gatewayUrl = "https://api.paysecure.net/api/v1/purchases";
+      // The standard optimized processing route
+      const gatewayUrl = "https://api.livepay.me/v1/charges";
       
       const response = await fetch(gatewayUrl, {
         method: "POST",
         headers: {
-          // Send BOTH standard casing and lowercase formats to bypass server proxy filters
-          "Authorization": `Basic ${basicAuthToken}`,
-          "authorization": `Basic ${basicAuthToken}`,
-          
-          // Alternative custom gateway authentication headers
-          "X-API-KEY": apiKey,
-          "X-API-Key": apiKey,
-          "x-api-key": apiKey,
-          
+          "Authorization": `Bearer ${apiKey}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          client: { 
-            email: "merchant_test@buyunganda.online", 
-            phone: phone 
-          },
-          purchase: { 
-            currency: "UGX", 
-            products: [{ name: "Wallet Deposit", price: parseFloat(amount) }] 
-          },
+          amount: parseFloat(amount),
+          currency: "UGX",
+          phone_number: phone,
+          description: "Wallet Deposit",
+          reference: txReference,
           brand_id: brandId,
-          success_redirect_url: "https://buyunganda.online",
-          failure_redirect_url: "https://buyunganda.online"
+          redirect_url: "https://buyunganda.online"
         })
       });
 
-      const gatewayData = await response.json();
+      // Handle raw non-JSON structural failures instantly before trying to decode
+      const textData = await response.text();
+      let gatewayData;
+      
+      try {
+        gatewayData = JSON.parse(textData);
+      } catch (e) {
+        throw new Error(`Gateway returned raw HTML text instead of JSON payload data: ${textData.substring(0, 100)}`);
+      }
 
       if (!response.ok) {
         throw new Error(`Gateway Verification Failed: ${JSON.stringify(gatewayData)}`);
       }
 
       return new Response(
-        JSON.stringify({ success: true, paymentUrl: gatewayData.checkout_url || gatewayData.redirect_url || gatewayData.url }),
+        JSON.stringify({ 
+          success: true, 
+          paymentUrl: gatewayData.checkout_url || gatewayData.redirect_url || gatewayData.url || gatewayData.data?.link 
+        }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 }
       );
 
