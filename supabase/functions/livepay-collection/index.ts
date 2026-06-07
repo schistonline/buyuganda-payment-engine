@@ -14,7 +14,7 @@ export default {
 
     try {
       const apiKey = Deno.env.get('LIVEPAY_API_KEY');
-      const brandId = Deno.env.get('LIVEPAY_BRAND_ID');
+      const brandId = Deno.env.get('LIVEPAY_BRAND_ID'); // Your Key ID: e.g., 5834fae99da01117
 
       if (!apiKey || !brandId) {
         throw new Error("Missing LivePay Secrets in your Supabase dashboard settings.");
@@ -43,45 +43,52 @@ export default {
 
       if (dbError) throw new Error(`Database Write Rejected: ${dbError.message}`);
 
-      // The standard optimized processing route
-      const gatewayUrl = "https://api.livepay.me/v1/charges";
+      // Official documented production environment endpoint
+      const gatewayUrl = "https://api.paysecure.net/api/v1/purchases";
       
       const response = await fetch(gatewayUrl, {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${apiKey}`,
+          "Authorization": `Bearer ${apiKey}`, // Standard clean authorization mapping
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          amount: parseFloat(amount),
-          currency: "UGX",
-          phone_number: phone,
-          description: "Wallet Deposit",
-          reference: txReference,
-          brand_id: brandId,
-          redirect_url: "https://buyunganda.online"
+          client: { 
+            email: "customer@buyunganda.online", 
+            phone: phone 
+          },
+          purchase: { 
+            currency: "UGX", 
+            products: [{ name: "Wallet Deposit", price: parseFloat(amount) }] 
+          },
+          brand_id: brandId, // Your Key ID connects the purchase to your specific profile routing
+          success_redirect_url: "https://buyunganda.online",
+          failure_redirect_url: "https://buyunganda.online"
         })
       });
 
-      // Handle raw non-JSON structural failures instantly before trying to decode
       const textData = await response.text();
       let gatewayData;
       
       try {
         gatewayData = JSON.parse(textData);
       } catch (e) {
-        throw new Error(`Gateway returned raw HTML text instead of JSON payload data: ${textData.substring(0, 100)}`);
+        throw new Error(`Gateway returned non-JSON text payload: ${textData.substring(0, 200)}`);
       }
 
       if (!response.ok) {
         throw new Error(`Gateway Verification Failed: ${JSON.stringify(gatewayData)}`);
       }
 
+      // Check all possible return fields for the generated checkout redirection string
+      const redirectLink = gatewayData.checkout_url || gatewayData.redirect_url || gatewayData.url || gatewayData.data?.link;
+
+      if (!redirectLink) {
+        throw new Error(`Handshake succeeded but no checkout URL was generated. Response: ${JSON.stringify(gatewayData)}`);
+      }
+
       return new Response(
-        JSON.stringify({ 
-          success: true, 
-          paymentUrl: gatewayData.checkout_url || gatewayData.redirect_url || gatewayData.url || gatewayData.data?.link 
-        }),
+        JSON.stringify({ success: true, paymentUrl: redirectLink }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 }
       );
 
