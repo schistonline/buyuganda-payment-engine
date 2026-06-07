@@ -43,7 +43,7 @@ export default {
 
       if (dbError) throw new Error(`Database Write Rejected: ${dbError.message}`);
 
-      // Cryptographically encode your secret key for native Basic Auth processing
+      // Encode credentials cleanly
       const basicAuthToken = btoa(`${apiKey}:`);
 
       const gatewayUrl = "https://api.paysecure.net/api/v1/purchases";
@@ -51,8 +51,15 @@ export default {
       const response = await fetch(gatewayUrl, {
         method: "POST",
         headers: {
-          "Authorization": `Basic ${basicAuthToken}`, // Formatted for standard Basic Auth
-          "X-API-Key": apiKey,                        // Passed as raw custom header fallback
+          // Send BOTH standard casing and lowercase formats to bypass server proxy filters
+          "Authorization": `Basic ${basicAuthToken}`,
+          "authorization": `Basic ${basicAuthToken}`,
+          
+          // Alternative custom gateway authentication headers
+          "X-API-KEY": apiKey,
+          "X-API-Key": apiKey,
+          "x-api-key": apiKey,
+          
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
