@@ -13,11 +13,11 @@ export default {
     }
 
     try {
-      const apiKey = Deno.env.get('LIVEPAY_API_KEY');
-      const brandId = Deno.env.get('LIVEPAY_BRAND_ID'); // Your Key ID: e.g., 5834fae99da01117
+      const consumerKey = Deno.env.get('PESAPAL_CONSUMER_KEY');
+      const consumerSecret = Deno.env.get('PESAPAL_CONSUMER_SECRET');
 
-      if (!apiKey || !brandId) {
-        throw new Error("Missing LivePay Secrets in your Supabase dashboard settings.");
+      if (!consumerKey || !consumerSecret) {
+        throw new Error("Missing Pesapal Consumer Credentials in Supabase Secrets.");
       }
 
       const { userId, phone, amount } = await req.json();
@@ -27,7 +27,8 @@ export default {
         Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
       );
 
-      const txReference = `COLL-${crypto.randomUUID().substring(0, 8).toUpperCase()}`;
+      // Generate a clean transaction tracking reference for the database
+      const txReference = `PESA-${crypto.randomUUID().substring(0, 8).toUpperCase()}`;
 
       const { error: dbError } = await supabase
         .from('transactions')
@@ -43,52 +44,64 @@ export default {
 
       if (dbError) throw new Error(`Database Write Rejected: ${dbError.message}`);
 
-      // Official documented production environment endpoint
-      const gatewayUrl = "https://api.paysecure.net/api/v1/purchases";
+      // --- STAGE 1: AUTHENTICATE WITH PESAPAL ---
+      // For Production Live Money, use: https://pay.pesapal.com/v3/api/Auth/RequestToken
+      const authUrl = "https://pay.pesapal.com/v3/api/Auth/RequestToken";
       
-      const response = await fetch(gatewayUrl, {
+      const authResponse = await fetch(authUrl, {
         method: "POST",
-        headers: {
-          "Authorization": `Bearer ${apiKey}`, // Standard clean authorization mapping
-          "Content-Type": "application/json"
-        },
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
         body: JSON.stringify({
-          client: { 
-            email: "customer@buyunganda.online", 
-            phone: phone 
-          },
-          purchase: { 
-            currency: "UGX", 
-            products: [{ name: "Wallet Deposit", price: parseFloat(amount) }] 
-          },
-          brand_id: brandId, // Your Key ID connects the purchase to your specific profile routing
-          success_redirect_url: "https://buyunganda.online",
-          failure_redirect_url: "https://buyunganda.online"
+          consumer_key: consumerKey,
+          consumer_secret: consumerSecret
         })
       });
 
-      const textData = await response.text();
-      let gatewayData;
+      const authData = await authResponse.json();
+      if (!authResponse.ok || !authData.token) {
+        throw new Error(`Pesapal Authentication Failed: ${JSON.stringify(authData)}`);
+      }
+
+      const bearerToken = authData.token;
+
+      // --- STAGE 2: SUBMIT TRANSACTION ORDER ---
+      // For Production Live Money, use: https://pay.pesapal.com/v3/api/Transactions/SubmitOrderRequest
+      const orderUrl = "https://pay.pesapal.com/v3/api/Transactions/SubmitOrderRequest";
       
-      try {
-        gatewayData = JSON.parse(textData);
-      } catch (e) {
-        throw new Error(`Gateway returned non-JSON text payload: ${textData.substring(0, 200)}`);
+      const orderResponse = await fetch(orderUrl, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${bearerToken}`,
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        },
+        body: JSON.stringify({
+          id: txReference,
+          currency: "UGX",
+          amount: parseFloat(amount),
+          description: "Marketplace Wallet Deposit",
+          callback_url: "https://buyunganda.online",
+          redirect_mode: "TOP_WINDOW",
+          billing_address: {
+            phone_number: phone,
+            email_address: "merchant_test@buyunganda.online"
+          }
+        })
+      });
+
+      const orderData = await orderResponse.json();
+      if (!orderResponse.ok) {
+        throw new Error(`Pesapal Order Request Failed: ${JSON.stringify(orderData)}`);
       }
 
-      if (!response.ok) {
-        throw new Error(`Gateway Verification Failed: ${JSON.stringify(gatewayData)}`);
-      }
-
-      // Check all possible return fields for the generated checkout redirection string
-      const redirectLink = gatewayData.checkout_url || gatewayData.redirect_url || gatewayData.url || gatewayData.data?.link;
-
-      if (!redirectLink) {
-        throw new Error(`Handshake succeeded but no checkout URL was generated. Response: ${JSON.stringify(gatewayData)}`);
+      // Extract secure redirect link from the structured response
+      const checkoutUrl = orderData.redirect_url;
+      if (!checkoutUrl) {
+        throw new Error(`Order accepted but no redirect URL was handed back: ${JSON.stringify(orderData)}`);
       }
 
       return new Response(
-        JSON.stringify({ success: true, paymentUrl: redirectLink }),
+        JSON.stringify({ success: true, paymentUrl: checkoutUrl }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 }
       );
 
