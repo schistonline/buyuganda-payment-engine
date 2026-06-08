@@ -17,7 +17,7 @@ export default {
       const consumerSecret = Deno.env.get('PESAPAL_CONSUMER_SECRET');
 
       if (!consumerKey || !consumerSecret) {
-        throw new Error("Missing Pesapal API credentials. Set PESAPAL_CONSUMER_KEY and PESAPAL_CONSUMER_SECRET in Supabase secrets.");
+        throw new Error("Missing Pesapal API credentials");
       }
 
       const { userId, phone, amount, campaignId } = await req.json();
@@ -64,7 +64,8 @@ export default {
 
       const bearerToken = authData.token;
 
-      // --- STAGE 2: REGISTER IPN (Instant Payment Notification) ---
+      // --- STAGE 2: REGISTER IPN (CRITICAL FOR PIN NOTIFICATION) ---
+      // This MUST be done for each merchant or use a static IPN ID
       const ipnUrl = "https://pay.pesapal.com/v3/api/URLSetup/RegisterIPN";
       const ipnResponse = await fetch(ipnUrl, {
         method: "POST",
@@ -74,50 +75,68 @@ export default {
           "Accept": "application/json"
         },
         body: JSON.stringify({
-          url: "https://yourdomain.com/pesapal-callback.html",
+          url: "https://yourdomain.com/api/pesapal/ipn", // Replace with your actual domain
           ipn_notification_type: "POST"
         })
       });
 
       const ipnData = await ipnResponse.json();
       
-      // Get IPN ID from response
-      const activeIpnId = ipnData.ipn_id || ipnData.notification_id;
+      // Get IPN ID - THIS IS CRITICAL for PIN notification to work
+      let activeIpnId = ipnData.ipn_id;
+      
+      // If registration failed, try to use a pre-registered IPN ID from environment
+      if (!activeIpnId) {
+        console.warn('IPN registration response:', ipnData);
+        activeIpnId = Deno.env.get('PESAPAL_IPN_ID'); // Fallback to static IPN ID
+      }
       
       if (!activeIpnId) {
-        console.warn('IPN registration warning:', ipnData);
-        // Fallback to a default IPN ID if needed, or continue without it
-        // Some Pesapal implementations work without explicit IPN
+        throw new Error('IPN ID is required for PIN notifications. Please register IPN in Pesapal dashboard.');
       }
 
-      // Get user email for billing
+      // Get user email
       const { data: profile } = await supabase
         .from('profiles')
-        .select('email')
+        .select('email, full_name')
         .eq('id', userId)
         .single();
 
       const userEmail = profile?.email || 'customer@thebrandingcompany.com';
+      const userFullName = profile?.full_name || 'Customer';
 
-      // --- STAGE 3: SUBMIT ORDER TO PESAPAL ---
+      // --- STAGE 3: SUBMIT ORDER WITH CORRECT FORMAT ---
       const orderUrl = "https://pay.pesapal.com/v3/api/Transactions/SubmitOrderRequest";
-      const orderPayload: any = {
+      
+      // IMPORTANT: The order payload format matters for PIN notification
+      const orderPayload = {
         id: txReference,
         currency: "UGX",
         amount: parseFloat(amount),
         description: "The Branding Company - Wallet Deposit",
-        callback_url: "https://yourdomain.com/pesapal-callback.html",
+        callback_url: "https://yourdomain.com/pesapal-callback.html", // Replace with actual domain
+        notification_id: activeIpnId, // CRITICAL: This enables PIN notification
         redirect_mode: "TOP_WINDOW",
         billing_address: {
+          email_address: userEmail,
           phone_number: phone,
-          email_address: userEmail
-        }
+          country_code: "UG",
+          first_name: userFullName.split(' ')[0] || '',
+          last_name: userFullName.split(' ')[1] || '',
+          line1: "N/A"
+        },
+        line_items: [
+          {
+            unique_id: txReference,
+            description: "Wallet Deposit",
+            amount: parseFloat(amount),
+            quantity: 1,
+            total_amount: parseFloat(amount)
+          }
+        ]
       };
 
-      // Add notification_id only if we have one
-      if (activeIpnId) {
-        orderPayload.notification_id = activeIpnId;
-      }
+      console.log('Submitting order with payload:', JSON.stringify(orderPayload, null, 2));
 
       const orderResponse = await fetch(orderUrl, {
         method: "POST",
@@ -132,6 +151,7 @@ export default {
       const orderData = await orderResponse.json();
       
       if (!orderResponse.ok) {
+        console.error('Order submission failed:', orderData);
         throw new Error(`Pesapal order failed: ${JSON.stringify(orderData)}`);
       }
 
@@ -141,8 +161,24 @@ export default {
         throw new Error(`No redirect URL received: ${JSON.stringify(orderData)}`);
       }
 
+      // Also store the pesapal_order_request for reference
+      await supabase
+        .from('transactions')
+        .update({
+          metadata: {
+            pesapal_order_request: orderData,
+            ipn_id: activeIpnId
+          }
+        })
+        .eq('reference', txReference);
+
       return new Response(
-        JSON.stringify({ success: true, paymentUrl: checkoutUrl, reference: txReference }),
+        JSON.stringify({ 
+          success: true, 
+          paymentUrl: checkoutUrl, 
+          reference: txReference,
+          orderData: orderData
+        }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 }
       );
 
